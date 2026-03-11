@@ -1,0 +1,278 @@
+# Utils package
+import logging
+from pyrogram import filters
+from config import Config
+
+logger = logging.getLogger(__name__)
+
+# In-memory admin cache — populated on startup and refreshed periodically
+admin_cache: set = set(Config.ADMINS)
+
+
+def update_admin_cache(admin_ids: list):
+    global admin_cache
+    admin_cache = set(admin_ids)
+    admin_cache.add(Config.OWNER_ID)
+
+
+async def _is_admin(_, __, message):
+    try:
+        user_id = message.from_user.id if message.from_user else None
+        if not user_id:
+            return False
+        return user_id in admin_cache or user_id == Config.OWNER_ID
+    except Exception as e:
+        logger.error(f"admin filter error: {e}")
+        return False
+
+
+async def _is_owner(_, __, message):
+    try:
+        user_id = message.from_user.id if message.from_user else None
+        return user_id == Config.OWNER_ID
+    except Exception:
+        return False
+
+
+admin_filter = filters.create(_is_admin, name="AdminFilter")
+owner_filter = filters.create(_is_owner, name="OwnerFilter")
+import logging
+from pyrogram import filters
+from config import Config
+
+logger = logging.getLogger(__name__)
+
+# In-memory admin cache — populated on startup and refreshed periodically
+admin_cache: set = set(Config.ADMINS)
+
+
+def update_admin_cache(admin_ids: list):
+    global admin_cache
+    admin_cache = set(admin_ids)
+    admin_cache.add(Config.OWNER_ID)
+
+
+async def _is_admin(_, __, message):
+    try:
+        user_id = message.from_user.id if message.from_user else None
+        if not user_id:
+            return False
+        return user_id in admin_cache or user_id == Config.OWNER_ID
+    except Exception as e:
+        logger.error(f"admin filter error: {e}")
+        return False
+
+
+async def _is_owner(_, __, message):
+    try:
+        user_id = message.from_user.id if message.from_user else None
+        return user_id == Config.OWNER_ID
+    except Exception:
+        return False
+
+
+admin_filter = filters.create(_is_admin, name="AdminFilter")
+owner_filter = filters.create(_is_owner, name="OwnerFilter")
+import logging
+import asyncio
+from datetime import datetime, timezone
+from pyrogram import Client
+from pyrogram.errors import UserNotParticipant, ChatAdminRequired, ChannelInvalid, FloodWait
+from database.models import get_settings
+from config import Config
+
+logger = logging.getLogger(__name__)
+
+BOT_START_TIME = datetime.now(timezone.utc)
+
+
+def get_uptime() -> str:
+    delta = datetime.now(timezone.utc) - BOT_START_TIME
+    days = delta.days
+    hours, rem = divmod(delta.seconds, 3600)
+    minutes, _ = divmod(rem, 60)
+    return f"{days}d {hours}h {minutes}m"
+
+
+def human_size(size: int) -> str:
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if size < 1024:
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} PB"
+
+
+async def check_force_sub(client: Client, user_id: int) -> list:
+    """Returns list of channels user hasn't joined. Empty list = all joined."""
+    settings = await get_settings()
+    if not settings.get("force_sub_enabled", False):
+        return []
+
+    channels = settings.get("force_sub_channels", [])
+    not_joined = []
+
+    for ch in channels:
+        if not ch:
+            continue
+        try:
+            member = await client.get_chat_member(ch, user_id)
+            if member.status.name in ("BANNED", "LEFT"):
+                not_joined.append(ch)
+        except UserNotParticipant:
+            not_joined.append(ch)
+        except (ChatAdminRequired, ChannelInvalid):
+            logger.warning(f"Bot not admin or channel invalid: {ch}")
+        except Exception as e:
+            logger.error(f"check_force_sub error for {ch}: {e}")
+
+    return not_joined
+
+
+async def get_file_info(message):
+    """Extract file info from a Pyrogram message."""
+    if message.document:
+        f = message.document
+        return f.file_id, "document", f.file_name or "Document", f.file_size
+    elif message.video:
+        f = message.video
+        return f.file_id, "video", f.file_name or "Video.mp4", f.file_size
+    elif message.audio:
+        f = message.audio
+        return f.file_id, "audio", f.file_name or "Audio.mp3", f.file_size
+    elif message.photo:
+        f = message.photo
+        return f.file_id, "photo", "Photo.jpg", f.file_size
+    elif message.voice:
+        f = message.voice
+        return f.file_id, "voice", "Voice.ogg", f.file_size
+    elif message.video_note:
+        f = message.video_note
+        return f.file_id, "video_note", "VideoNote.mp4", f.file_size
+    elif message.sticker:
+        f = message.sticker
+        return f.file_id, "sticker", f.file_name or "Sticker.webp", f.file_size
+    elif message.animation:
+        f = message.animation
+        return f.file_id, "animation", f.file_name or "Animation.gif", f.file_size
+    return None, None, None, 0
+
+
+async def send_file_to_user(client: Client, chat_id: int, message_id: int, protect: bool = False):
+    """Copy a file from LOG_CHANNEL to the user."""
+    try:
+        await client.copy_message(
+            chat_id=chat_id,
+            from_chat_id=Config.LOG_CHANNEL,
+            message_id=message_id,
+            protect_content=protect
+        )
+        return True
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        return await send_file_to_user(client, chat_id, message_id, protect)
+    except Exception as e:
+        logger.error(f"send_file_to_user error: {e}")
+        return False
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+
+def main_settings_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 Force Subscribe", callback_data="settings_forcesub")],
+        [InlineKeyboardButton("⏳ Auto Delete", callback_data="settings_autodelete")],
+        [InlineKeyboardButton("🔒 Protect Content", callback_data="settings_protect")],
+        [InlineKeyboardButton("👮 Admin Management", callback_data="settings_admins")],
+        [InlineKeyboardButton("📝 Custom Welcome Message", callback_data="settings_welcome")],
+        [InlineKeyboardButton("🔧 Maintenance Mode", callback_data="settings_maintenance")],
+        [InlineKeyboardButton("📊 Bot Stats", callback_data="settings_stats")],
+        [InlineKeyboardButton("❌ Close", callback_data="settings_close")],
+    ])
+
+
+def back_keyboard(callback="settings_main"):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Back to Main", callback_data=callback)]
+    ])
+
+
+def forcesub_keyboard(settings: dict):
+    enabled = settings.get("force_sub_enabled", False)
+    channels = settings.get("force_sub_channels", [])
+
+    rows = []
+    for i in range(3):
+        if i < len(channels):
+            rows.append([InlineKeyboardButton(
+                f"📢 Channel {i+1}: {channels[i]}",
+                callback_data=f"fs_info_{i}"
+            ), InlineKeyboardButton("➖ Remove", callback_data=f"fs_remove_{i}")])
+        else:
+            rows.append([InlineKeyboardButton(
+                f"📢 Channel {i+1}: Not Set",
+                callback_data=f"fs_info_{i}"
+            ), InlineKeyboardButton("➕ Add", callback_data=f"fs_add_{i}")])
+
+    toggle_text = "❌ Disable Force Sub" if enabled else "✅ Enable Force Sub"
+    rows.append([InlineKeyboardButton(toggle_text, callback_data="fs_toggle")])
+    rows.append([InlineKeyboardButton("🔙 Back to Main", callback_data="settings_main")])
+    return InlineKeyboardMarkup(rows)
+
+
+def autodelete_keyboard(settings: dict):
+    enabled = settings.get("auto_delete_enabled", False)
+    seconds = settings.get("auto_delete_seconds", 600)
+    toggle_text = "❌ Disable" if enabled else "✅ Enable"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"Auto Delete: {'✅ ON' if enabled else '❌ OFF'}", callback_data="ad_status")],
+        [InlineKeyboardButton(f"⏱️ Current Delay: {seconds}s", callback_data="ad_status")],
+        [InlineKeyboardButton(toggle_text, callback_data="ad_toggle"),
+         InlineKeyboardButton("⏱️ Set Delay", callback_data="ad_set_delay")],
+        [InlineKeyboardButton("🔙 Back to Main", callback_data="settings_main")],
+    ])
+
+
+def protect_keyboard(settings: dict):
+    enabled = settings.get("protect_content", False)
+    toggle_text = "Turn OFF 🔴" if enabled else "Turn ON 🟢"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"Protect Content: {'ON ✅' if enabled else 'OFF ❌'}", callback_data="pc_status")],
+        [InlineKeyboardButton(toggle_text, callback_data="pc_toggle")],
+        [InlineKeyboardButton("🔙 Back to Main", callback_data="settings_main")],
+    ])
+
+
+def maintenance_keyboard(settings: dict):
+    enabled = settings.get("bot_maintenance", False)
+    toggle_text = "Turn OFF 🟢" if enabled else "Turn ON 🔴"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"Maintenance: {'ON 🔴' if enabled else 'OFF 🟢'}", callback_data="mt_status")],
+        [InlineKeyboardButton(toggle_text, callback_data="mt_toggle")],
+        [InlineKeyboardButton("🔙 Back to Main", callback_data="settings_main")],
+    ])
+
+
+def join_channels_keyboard(channels: list, bot_username: str = None):
+    rows = []
+    for i, ch in enumerate(channels):
+        if isinstance(ch, str) and ch.startswith("@"):
+            url = f"https://t.me/{ch.lstrip('@')}"
+        else:
+            url = f"https://t.me/c/{str(ch).lstrip('-100')}"
+        rows.append([InlineKeyboardButton(f"📢 Join Channel {i+1}", url=url)])
+    rows.append([InlineKeyboardButton("✅ I've Joined", callback_data="check_joined")])
+    return InlineKeyboardMarkup(rows)
+
+
+def broadcast_type_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📨 Forward", callback_data="bc_forward"),
+         InlineKeyboardButton("📋 Copy", callback_data="bc_copy")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="bc_cancel")],
+    ])
+
+
+def file_link_keyboard(link: str):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔗 Share Link", url=f"https://t.me/share/url?url={link}"),
+         InlineKeyboardButton("📋 Copy Link", callback_data=f"copy_link|{link[:50]}")]
+    ])
